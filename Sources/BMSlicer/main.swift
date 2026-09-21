@@ -102,7 +102,7 @@ final class Editor: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextFie
         renameButton.toolTip = "선택한 클립의 제목만 변경합니다. 선택이 없으면 전체에 적용합니다."
         let naming = stack([label("파일 이름"), nameField, renameButton, button("시작 번호…", #selector(chooseStart)), digitsMenu, bitMenu, button("선택 내보내기…", #selector(exportSelected)), button("전체 내보내기…", #selector(exportAll))])
         previewLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular); previewLabel.textColor = accent
-        let editing = stack([selectionLabel, button("자르기  ⌘E", #selector(split)), button("합치기  ⌘J", #selector(join)), button("전체 선택  ⌘A", #selector(selectAllClips)), button("실행 취소", #selector(undoEdit))])
+        let editing = stack([selectionLabel, button("자르기  ⌘E", #selector(split)), button("합치기  ⌘J", #selector(join)), button("삭제  ⌫", #selector(deleteClips)), button("전체 선택  ⌘A", #selector(selectAllClips)), button("실행 취소", #selector(undoEdit))])
         let help = label("파형 드래그: 시간 선택    ·    제목 띠 드래그: WAV 파일 전달    ·    Shift/⌘ 클릭: 여러 클립 선택    ·    ⌘ 스크롤: 확대/축소    ·    Space: 재생", small: true)
         status.font = .monospacedSystemFont(ofSize: 11, weight: .regular); status.textColor = .secondaryLabelColor; status.lineBreakMode = .byTruncatingTail
         let column = NSStackView(views: [header, controls, scroll, editing, naming, previewLabel, help, status]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 15; column.translatesAutoresizingMaskIntoConstraints = false
@@ -125,6 +125,10 @@ final class Editor: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextFie
         submenu("파일", [("오디오 열기…", #selector(openFile), "o", .command), ("선택 내보내기…", #selector(exportSelected), "e", [.command,.shift]), ("전체 내보내기…", #selector(exportAll), "e", [.command,.option])])
         submenu("편집", [("실행 취소", #selector(undoEdit), "z", .command), ("다시 실행", #selector(redoEdit), "z", [.command,.shift]), ("자르기", #selector(split), "e", .command), ("합치기", #selector(join), "j", .command), ("전체 선택", #selector(selectAllClips), "a", .command), ("복사", #selector(copyText), "c", .command), ("붙여넣기", #selector(pasteText), "v", .command), ("잘라내기", #selector(cutText), "x", .command)])
         submenu("보기", [("그리드 좁히기", #selector(narrowGrid), "1", .command), ("그리드 넓히기", #selector(widenGrid), "2", .command), ("Triplet 전환", #selector(toggleTriplet), "3", .command), ("Snap 전환", #selector(toggleSnap), "4", .command), ("자동 그리드 전환", #selector(toggleAuto), "5", .command), ("전체 보기", #selector(fit), "0", .command)])
+        if let editMenu = menu.items.first(where: { $0.title == "편집" })?.submenu {
+            let deletion = NSMenuItem(title: "삭제", action: #selector(NSResponder.deleteBackward(_:)), keyEquivalent: "\u{8}")
+            deletion.keyEquivalentModifierMask = []; deletion.target = nil; editMenu.addItem(deletion)
+        }
         NSApp.mainMenu = menu
     }
     @objc func quit() { NSApp.terminate(nil) }
@@ -156,7 +160,7 @@ final class Editor: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextFie
         func discardTemporaryImport() { if let cleanup = cleanup { try? FileManager.default.removeItem(at: cleanup) } }
         guard !loading else { discardTemporaryImport(); return }
         guard ["wav","ogg","mp3"].contains(url.pathExtension.lowercased()) else { discardTemporaryImport(); alert(SliceError.message("WAV, OGG Vorbis, MP3 파일을 선택해 주세요.")); return }
-        if !state.cuts.isEmpty {
+        if !state.cuts.isEmpty || !state.deleted.isEmpty {
             let a = NSAlert(); a.messageText = "다른 오디오를 열까요?"; a.informativeText = "현재 분할 편집은 초기화됩니다. 필요한 WAV를 먼저 내보내세요."; a.addButton(withTitle: "열기"); a.addButton(withTitle: "취소"); if a.runModal() != .alertFirstButtonReturn { discardTemporaryImport(); return }
         }
         stop(); loading = true; refresh("오디오 읽는 중… \(url.lastPathComponent)")
@@ -191,10 +195,18 @@ final class Editor: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextFie
     @objc func fit() { if let a = audio { pps = max(0.05, (scroll.contentSize.width-60) / a.duration) }; resizeTimeline(); scroll.contentView.scroll(to: .zero); refresh() }
     func snap(_ frame: Int) -> Int { guard let a = audio else { return 0 }; return snapping ? grid.snap(frame, sampleRate: a.sampleRate, bpm: bpm, total: a.frames) : min(a.frames,max(0,frame)) }
     @objc func split() { guard let a = audio, !loading else { return }; commitBPM(); let cuts = state.range.map { [$0.lowerBound,$0.upperBound] } ?? [state.cursor]; if cuts.allSatisfy({ $0 <= 0 || $0 >= a.frames || state.cuts.contains($0) }) { return }; saveUndo(); state.split(at: cuts,total:a.frames); refresh() }
+    @objc func deleteClips() {
+        guard let audio = audio, !loading else { return }
+        var next = state
+        guard next.deleteSelection(total: audio.frames) else { return }
+        stop(); saveUndo(); state = next
+        window.makeFirstResponder(timeline)
+        refresh("선택한 오디오 삭제 · ⌘Z로 되돌리기")
+    }
     @objc func join() { guard let a = audio, !loading else { return }; var next = state; next.join(total: a.frames); if next.cuts != state.cuts { saveUndo(); state = next; refresh() } }
     @objc func splitGrid() {
         guard let a = audio, !loading else { return }; commitBPM()
-        let limits: [Range<Int>] = state.range.map { [$0] } ?? (state.selected.isEmpty ? [0..<a.frames] : state.selected.sorted().compactMap { segments.indices.contains($0) ? segments[$0] : nil })
+        let limits: [Range<Int>] = state.range.map { r in segments.filter { $0.overlaps(r) }.map { max($0.lowerBound, r.lowerBound)..<min($0.upperBound, r.upperBound) } } ?? (state.selected.isEmpty ? segments : state.selected.sorted().compactMap { segments.indices.contains($0) ? segments[$0] : nil })
         let points = grid.boundaries(sampleRate:a.sampleRate,bpm:bpm,total:a.frames).filter { f in limits.contains { f > $0.lowerBound && f < $0.upperBound } }
         if points.count > 10000 { alert(SliceError.message("한 번에 10,000개까지 자를 수 있습니다. 구간을 선택하거나 그리드를 넓혀 주세요.")); return }
         guard !points.isEmpty else { return }; saveUndo(); state.split(at: points,total:a.frames); refresh()
@@ -279,7 +291,7 @@ final class Editor: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextFie
         var range = state.range ?? (min(state.cursor,a.frames-1)..<a.frames)
         if state.range == nil, !state.selected.isEmpty { let chosen = outputSelection(all:false); if let first = chosen.first, let last = chosen.last { range = first.lowerBound..<last.upperBound } }
         do {
-            player = try AVAudioPlayer(data:a.wav(range:range,bits:16),fileTypeHint:AVFileType.wav.rawValue); playbackRange = range
+            player = try AVAudioPlayer(data:a.wav(range:range,bits:16,silencing:state.deleted),fileTypeHint:AVFileType.wav.rawValue); playbackRange = range
             guard player!.play() else { throw SliceError.message("오디오 장치에서 재생을 시작하지 못했습니다.") }; playButton.title = "■ 정지"
             playbackTimer = Timer.scheduledTimer(withTimeInterval: 1/30, repeats:true) { [weak self] _ in
                 guard let self = self, let player = self.player else { return }; if !player.isPlaying { self.stop(); return }; self.playhead = range.lowerBound + Int(player.currentTime*a.sampleRate); self.timeline.needsDisplay = true
@@ -361,6 +373,10 @@ final class Timeline: AudioDropView, NSDraggingSource {
             }
         } }
         NSColor(calibratedRed:0.90,green:0.76,blue:0.51,alpha:1).setStroke(); wave.stroke()
+        for span in editor.state.deleted {
+            bg.setFill()
+            NSRect(x: x(span.lowerBound), y: trackTop, width: x(span.upperBound)-x(span.lowerBound), height: bottom-trackTop).fill()
+        }
         for cut in editor.state.cuts where x(cut) >= visible.minX && x(cut) <= visible.maxX {
             NSColor.black.setStroke(); let p = NSBezierPath(); p.move(to:NSPoint(x:x(cut),y:trackTop)); p.line(to:NSPoint(x:x(cut),y:bottom)); p.lineWidth=2; p.stroke()
         }
@@ -427,8 +443,11 @@ final class Timeline: AudioDropView, NSDraggingSource {
             editor.scroll.contentView.scroll(to:NSPoint(x:origin,y:0)); editor.scroll.reflectScrolledClipView(editor.scroll.contentView)
         }
     }
+    override func deleteBackward(_ sender: Any?) { editor.deleteClips() }
+    override func deleteForward(_ sender: Any?) { editor.deleteClips() }
     override func selectAll(_ sender: Any?) { editor.selectAllClips() }
     override func keyDown(with event: NSEvent) {
+        if [51,117].contains(event.keyCode) { editor.deleteClips(); return }
         if event.keyCode == 49 { editor.togglePlay(); return }
         if event.keyCode == 53 { editor.state.selected=[]; editor.state.range=nil; editor.stop(); editor.refresh(); return }
         if [123,124].contains(event.keyCode), let a = editor.audio {
@@ -441,7 +460,7 @@ final class Timeline: AudioDropView, NSDraggingSource {
         super.keyDown(with:event)
     }
     override func menu(for event: NSEvent) -> NSMenu? {
-        let m = NSMenu(); for (t,a) in [("자르기 ⌘E",#selector(Editor.split)),("합치기 ⌘J",#selector(Editor.join)),("그리드 일괄 자르기",#selector(Editor.splitGrid)),("선택 WAV 내보내기…",#selector(Editor.exportSelected))] { let i=NSMenuItem(title:t,action:a,keyEquivalent:""); i.target=editor; m.addItem(i) }; return m
+        let m = NSMenu(); for (t,a) in [("자르기 ⌘E",#selector(Editor.split)),("합치기 ⌘J",#selector(Editor.join)),("그리드 일괄 자르기",#selector(Editor.splitGrid)),("삭제 ⌫",#selector(Editor.deleteClips)),("선택 WAV 내보내기…",#selector(Editor.exportSelected))] { let i=NSMenuItem(title:t,action:a,keyEquivalent:""); i.target=editor; m.addItem(i) }; return m
     }
     func draggingSession(_ session: NSDraggingSession,sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation { .copy }
     func ignoreModifierKeys(for session: NSDraggingSession) -> Bool { true }

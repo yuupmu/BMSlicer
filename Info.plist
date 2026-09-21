@@ -4,7 +4,7 @@
 <key>CFBundleName</key><string>BMSlicer</string><key>CFBundleDisplayName</key><string>BMSlicer</string>
 <key>CFBundleIdentifier</key><string>local.boomu.BMSlicer</string>
 <key>CFBundleExecutable</key><string>BMSlicer</string><key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>1.0.2</string><key>CFBundleVersion</key><string>3</string>
+<key>CFBundleShortVersionString</key><string>1.0.3</string><key>CFBundleVersion</key><string>4</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string><key>NSHighResolutionCapable</key><true/>
 <key>CFBundleDocumentTypes</key><array><dict><key>CFBundleTypeName</key><string>Audio</string><key>CFBundleTypeRole</key><string>Viewer</string><key>LSHandlerRank</key><string>Alternate</string><key>CFBundleTypeExtensions</key><array><string>wav</string><string>ogg</string><string>mp3</string></array></dict></array>
 </dict></plist>

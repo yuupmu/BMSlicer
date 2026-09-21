@@ -32,6 +32,7 @@ public struct Grid: Equatable {
 
 public struct EditState: Equatable {
     public var titles: [Int: String] = [:]
+    public var deleted: [Range<Int>] = []
     public var cuts: [Int] = []
     public var selected: Set<Int> = []
     public var cursor: Int = 0
@@ -39,11 +40,41 @@ public struct EditState: Equatable {
     public init() {}
     public func segments(total: Int) -> [Range<Int>] {
         let edges = [0] + cuts + [total]
-        return zip(edges, edges.dropFirst()).compactMap { $0 < $1 ? $0..<$1 : nil }
+        return zip(edges, edges.dropFirst()).compactMap { a, b in
+            guard a < b, !deleted.contains(where: { $0.overlaps(a..<b) }) else { return nil }
+            return a..<b
+        }
     }
     public mutating func split(at frames: [Int], total: Int) {
         cuts = Array(Set(cuts + frames.filter { $0 > 0 && $0 < total })).sorted()
         selected = []; range = nil
+    }
+    @discardableResult public mutating func deleteSelection(total: Int) -> Bool {
+        let clips = segments(total: total)
+        let targets: [Range<Int>]
+        if let selection = range {
+            targets = clips.compactMap { clip in
+                let a = max(clip.lowerBound, selection.lowerBound), b = min(clip.upperBound, selection.upperBound)
+                return a < b ? a..<b : nil
+            }
+        } else if !selected.isEmpty {
+            targets = clips.indices.filter { selected.contains($0) }.map { clips[$0] }
+        } else {
+            targets = clips.filter { $0.contains(cursor) }
+        }
+        guard !targets.isEmpty else { return false }
+        cuts = Array(Set(cuts + targets.flatMap { [$0.lowerBound, $0.upperBound] }.filter { $0 > 0 && $0 < total })).sorted()
+        var merged: [Range<Int>] = []
+        for span in (deleted + targets).sorted(by: { $0.lowerBound < $1.lowerBound }) {
+            if let last = merged.last, last.upperBound >= span.lowerBound {
+                merged[merged.count - 1] = last.lowerBound..<max(last.upperBound, span.upperBound)
+            } else { merged.append(span) }
+        }
+        deleted = merged
+        let starts = Set(segments(total: total).map { $0.lowerBound })
+        titles = titles.filter { starts.contains($0.key) }
+        selected = []; range = nil
+        return true
     }
     public mutating func rename(total: Int, template: String, start: Int, digits: Int = 1) throws {
         let clips = segments(total: total)
@@ -62,7 +93,7 @@ public struct EditState: Equatable {
     public mutating func join(total: Int) {
         let old = segments(total: total)
         let indices: Set<Int> = range.map { r in Set(old.indices.filter { old[$0].overlaps(r) }) } ?? selected
-        let removed = Set(cuts.indices.filter { indices.contains($0) && indices.contains($0+1) }.map { cuts[$0] })
+        let removed = Set(old.indices.dropLast().filter { indices.contains($0) && indices.contains($0+1) && old[$0].upperBound == old[$0+1].lowerBound }.map { old[$0].upperBound })
         cuts.removeAll { removed.contains($0) }
         titles = titles.filter { !removed.contains($0.key) }
         let selectedRanges = old.indices.filter { indices.contains($0) }.map { old[$0] }
@@ -132,7 +163,7 @@ public final class AudioData {
         if b-a < 256 { return samples[channel][a..<b].reduce(0) { max($0, abs($1.isFinite ? $1 : 0)) } }
         return peaks[channel][(a/256)...min(peaks[channel].count-1, (b-1)/256)].max() ?? 0
     }
-    public func wav(range: Range<Int>, bits: Int = 24) throws -> Data {
+    public func wav(range: Range<Int>, bits: Int = 24, silencing: [Range<Int>] = []) throws -> Data {
         guard range.lowerBound >= 0, range.upperBound <= frames, !range.isEmpty, [16,24].contains(bits) else { throw SliceError.message("잘못된 내보내기 범위입니다.") }
         let size = range.count * channels * (bits / 8)
         guard size < Int(UInt32.max)-36 else { throw SliceError.message("WAV 최대 크기를 초과했습니다.") }
@@ -144,8 +175,13 @@ public final class AudioData {
         ascii("RIFF"); u32(size+36+padding); ascii("WAVEfmt "); u32(16); u16(1); u16(channels)
         u32(Int(sampleRate.rounded())); u32(Int(sampleRate.rounded()) * channels * bits / 8); u16(channels * bits / 8); u16(bits); ascii("data"); u32(size)
         let scale = Double(1 << (bits-1)); let maximum = Int(scale)-1
-        for frame in range { for c in 0..<channels {
-            let s = samples[c][frame]; let value = Int((Double(max(-1, min(1, s.isFinite ? s : 0))) * scale).rounded())
+        let silence = silencing.sorted { $0.lowerBound < $1.lowerBound }
+        var silenceIndex = 0
+        for frame in range {
+            while silenceIndex < silence.count && silence[silenceIndex].upperBound <= frame { silenceIndex += 1 }
+            let muted = silenceIndex < silence.count && silence[silenceIndex].contains(frame)
+            for c in 0..<channels {
+            let s: Float = muted ? 0 : samples[c][frame]; let value = Int((Double(max(-1, min(1, s.isFinite ? s : 0))) * scale).rounded())
             let v = max(-Int(scale), min(maximum, value))
             result.append(UInt8(truncatingIfNeeded: v)); result.append(UInt8(truncatingIfNeeded: v >> 8))
             if bits == 24 { result.append(UInt8(truncatingIfNeeded: v >> 16)) }

@@ -102,6 +102,37 @@ func testClipRename() throws {
     state.split(at: [10], total: 30); expectEqual(state.titles[10], nil)
 }
 
+func testDeletion() throws {
+    var e = EditState(); e.split(at: [10,20,30], total: 40)
+    e.titles = [0:"a.wav",10:"b.wav",20:"c.wav",30:"d.wav"]
+    e.selected = [1,3]; let before = e
+    expectEqual(e.deleteSelection(total:40),true)
+    expectEqual(e.segments(total:40),[0..<10,20..<30])
+    expectEqual(e.titles,[0:"a.wav",20:"c.wav"])
+    let after = e; e = before; expectEqual(e.segments(total:40).count,4); e = after
+    e.selected = [0,1]; e.join(total:40)
+    expectEqual(e.segments(total:40),[0..<10,20..<30])
+    e.split(at:[5,15,25,35],total:40)
+    e.selected = Set(e.segments(total:40).indices); e.join(total:40)
+    expectEqual(e.segments(total:40),[0..<10,20..<30])
+    e.range = 5..<25; expectEqual(e.deleteSelection(total:40),true)
+    expectEqual(e.segments(total:40),[0..<5,25..<30])
+    e.cursor = 12; expectEqual(e.deleteSelection(total:40),false)
+    e.cursor = 26; expectEqual(e.deleteSelection(total:40),true)
+    e.selected = [0]; expectEqual(e.deleteSelection(total:40),true)
+    e.split(at:[1,7,27],total:40); expectEqual(e.segments(total:40),[])
+    expectEqual(e.deleteSelection(total:40),false)
+
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString+".wav")
+    defer { try? FileManager.default.removeItem(at:url) }
+    let audio = try AudioData(samples:[Array(repeating:Float(0.5),count:40)],sampleRate:44100,source:url)
+    try audio.wav(range:5..<35,bits:24,silencing:after.deleted).write(to:url)
+    let read = try AudioData.load(url)
+    expectEqual(read.frames,30)
+    for i in 0..<30 { expectEqual(read.samples[0][i],after.deleted.contains(where:{$0.contains(i+5)}) ? Float(0) : Float(0.5),accuracy:0.000001) }
+    expectEqual(audio.samples[0],Array(repeating:Float(0.5),count:40))
+}
+
 let tests = CoreTests()
 var suite: [(String, () throws -> Void)] = [
 ("grid rounding and triplets",tests.testTripletGridAndNoCumulativeDrift),
@@ -112,7 +143,8 @@ var suite: [(String, () throws -> Void)] = [
 ("odd WAV chunk padding and clipping",tests.testOddLength24BitWavAndClipping),
 ("transactional export failure",tests.testFailureDoesNotLeavePartialFiles),
 ("adaptive grid and snapping",tests.testAdaptiveGrid),
-("clip titles, numbering and edit preservation",testClipRename)]
+("clip titles, numbering and edit preservation",testClipRename),
+("deletion, gaps, restore and silent playback",testDeletion)]
 if CommandLine.arguments.contains("--ogg") && CommandLine.arguments.contains("--mp3") { suite.append(("OGG and MP3 input",tests.testOggAndMP3Decode)) }
 if CommandLine.arguments.contains("--drop") { suite.append(("AppKit file drop lifecycle",testFileDrops)); suite.append(("File-promise type negotiation",testPromiseNegotiation)) }
 do { for (name,run) in suite { try run(); print("PASS: \(name)") }; print("ALL PASSED: \(suite.count) suites, \(checks) checks") } catch { print("FAIL: \(error)"); exit(1) }
