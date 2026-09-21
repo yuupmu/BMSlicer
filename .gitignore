@@ -1,0 +1,28 @@
+# Swift build output and local editor settings
+.build/
+.swiftpm/
+dist/
+*.app/
+*.dSYM/
+.DS_Store
+.idea/
+.vscode/
+
+# Local audio, exports and test artifacts
+TestOutput/
+DragExports/
+*.wav
+*.ogg
+*.mp3
+*.aif
+*.aiff
+*.flac
+*.asd
+*.log
+
+# Local credentials and environment files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
